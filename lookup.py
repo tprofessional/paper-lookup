@@ -1,12 +1,13 @@
 import requests
 import re
+import argparse
 
 #---- One-time use for AGI lab website ----
 
 TYPE_MAP = {
-    "journal": ["journal-article"],
-    "conference": ["proceedings-article", "journal-article"],
-    "preprint": ["posted-content"],
+    "j": ["journal-article"],
+    "c": ["proceedings-article", "journal-article"],
+    "p": ["posted-content"],
 }
 
 def get_title(line):
@@ -31,7 +32,7 @@ def search_doi(title, pub_type):
 
     Args:
         title (str): Title of the paper
-        pub_type (str): Type of publication ('journal', 'conference', 'preprint')
+        pub_type (str): Type of publication ('j', 'c', 'p')
 
     Return:
         str or None: DOI string or None if not found
@@ -103,17 +104,85 @@ def fill_fields(line, doi, volume, issue, pages):
     return line
 
 def main():
-    with open("papers.txt", "r") as f:
+    parser = argparse.ArgumentParser(
+        description="Fill publication metadata using Crossref."
+    )
+
+    parser.add_argument(
+        "-i",
+        "--input",
+        required=True,
+        help="Input file containing publication entries."
+    )
+
+    parser.add_argument(
+        "-p",
+        "--pub-type",
+        required=True,
+        # journal, conference, preprint
+        choices=["j", "c", "p"],
+        help="Publication type."
+    )
+
+    parser.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        help="Output file."
+    )
+
+    args = parser.parse_args()
+
+    with open(args.input, "r", encoding="utf-8") as f:
         lines = f.readlines()
-    
-    # print(lines[0])
+
+    completed = []
+
+    successes = 0
+    total = 0
+
     for line in lines:
+        stripped = line.strip()
+
+        if not stripped:
+            continue
+
+        total += 1
+
         title = get_title(line)
 
-        if title:
-            metadata = get_metadata(title)
-        
+        if title is None:
+            print(f"[FAIL] Could not extract title:\n{line.strip()}")
+            completed.append(line)
+            continue
 
+        doi = search_doi(title, args.pub_type)
+
+        if doi is None:
+            print(f"[FAIL] {title}")
+            # for out format consistency on fail
+            completed.append(line.rstrip() + "\n\n")
+            continue
+
+        metadata = get_metadata(doi)
+
+        line = fill_fields(
+            line,
+            metadata["doi"],
+            metadata["volume"],
+            metadata["issue"],
+            metadata["pages"],
+        )
+
+        completed.append(line.rstrip() + "\n\n")
+        successes += 1
+
+        print(f"[ OK ] {title}")
+
+    with open(args.output, "w", encoding="utf-8") as f:
+        f.writelines(completed)
+
+    print(f"\nRetrieved metadata for {successes}/{total} papers.")
 
 if __name__ == "__main__":
     main()
