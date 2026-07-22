@@ -26,16 +26,28 @@ def get_title(line):
     else:
         return None
 
-def search_doi(title, pub_type):
+def _metadata_from_paper(paper, doi=None):
+    """Build metadata dict from a Crossref work item."""
+    doi = doi or paper.get("DOI", "")
+    return {
+        "title": paper.get("title", [""])[0],
+        "volume": paper.get("volume", ""),
+        "issue": paper.get("issue", ""),
+        "pages": paper.get("page", ""),
+        "doi": doi,
+        "url": f"https://doi.org/{doi}" if doi else "",
+    }
+
+def search_paper(title, pub_type):
     """
-    Helper to get the correct DOI from title.
+    Look up a paper by title and return its metadata from the search hit.
 
     Args:
         title (str): Title of the paper
         pub_type (str): Type of publication ('j', 'c', 'p')
 
     Return:
-        str or None: DOI string or None if not found
+        dict or None: Metadata dict or None if not found
     """
     allowed_types = TYPE_MAP[pub_type]
 
@@ -65,32 +77,19 @@ def search_doi(title, pub_type):
 
         doi = paper.get("DOI")
         if doi:
-            return doi
+            return _metadata_from_paper(paper, doi)
 
     return None
 
 #---- Main functions ----
-'''
-    Return title, volume, issue, pages from doi.
-'''
 def get_metadata(doi):
+    """Return title, volume, issue, pages from doi."""
     url = f"https://api.crossref.org/works/{doi}"
 
     r = requests.get(url)
     r.raise_for_status()
 
-    paper = r.json()["message"]
-
-    metadata = {
-        "title": paper.get("title", [""])[0],
-        "volume": paper.get("volume", ""),
-        "issue": paper.get("issue", ""),
-        "pages": paper.get("page", ""),
-        "doi": doi,
-        "url": f"https://doi.org/{doi}",
-    }
-
-    return metadata
+    return _metadata_from_paper(r.json()["message"], doi)
 
 def fill_fields(line, doi, volume, issue, pages):
     url = f"https://doi.org/{doi}" if doi else ""
@@ -103,41 +102,12 @@ def fill_fields(line, doi, volume, issue, pages):
 
     return line
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Fill publication metadata using Crossref."
-    )
-
-    parser.add_argument(
-        "-i",
-        "--input",
-        required=True,
-        help="Input file containing publication entries."
-    )
-
-    parser.add_argument(
-        "-p",
-        "--pub-type",
-        required=True,
-        # journal, conference, preprint
-        choices=["j", "c", "p"],
-        help="Publication type."
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output",
-        required=True,
-        help="Output file."
-    )
-
-    args = parser.parse_args()
-
-    with open(args.input, "r", encoding="utf-8") as f:
+def process_from_input(input_file, pub_type):
+    """Look up DOIs from titles in formatted publication entries."""
+    with open(input_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     completed = []
-
     successes = 0
     total = 0
 
@@ -156,15 +126,13 @@ def main():
             completed.append(line)
             continue
 
-        doi = search_doi(title, args.pub_type)
+        metadata = search_paper(title, pub_type)
 
-        if doi is None:
+        if metadata is None:
             print(f"[FAIL] {title}")
             # for out format consistency on fail
             completed.append(line.rstrip() + "\n\n")
             continue
-
-        metadata = get_metadata(doi)
 
         line = fill_fields(
             line,
@@ -178,6 +146,81 @@ def main():
         successes += 1
 
         print(f"[ OK ] {title}")
+
+    return completed, successes, total
+
+def process_from_dois(doi_file):
+    """Fetch metadata for each DOI in a file (one DOI per line)."""
+    with open(doi_file, "r", encoding="utf-8") as f:
+        dois = [line.strip() for line in f if line.strip()]
+
+    completed = []
+    successes = 0
+    total = 0
+
+    for doi in dois:
+        total += 1
+
+        metadata = get_metadata(doi)
+        title = metadata["title"] or doi
+
+        # Minimal template so fill_fields can populate the known slots
+        line = "[volume:][issue:][pages:][doi:][url:]"
+        line = fill_fields(
+            line,
+            metadata["doi"],
+            metadata["volume"],
+            metadata["issue"],
+            metadata["pages"],
+        )
+
+        completed.append(line.rstrip() + "\n\n")
+        successes += 1
+
+        print(f"[ OK ] {title}")
+
+    return completed, successes, total
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Fill publication metadata using Crossref."
+    )
+
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "-d",
+        help=".txt file containing DOIs of each publication."
+    )
+    mode.add_argument(
+        "-i",
+        help=".txt file containing publication entries formatted as [authors][yr][title]...[vol][iss][pgs]."
+    )
+
+    parser.add_argument(
+        "-p",
+        "--pub-type",
+        required=False,
+        # journal, conference, preprint
+        choices=["j", "c", "p"],
+        help="Publication type (required with -i)."
+    )
+
+    parser.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        help="Output file."
+    )
+
+    args = parser.parse_args()
+
+    if args.i and not args.pub_type:
+        parser.error("-p/--pub-type is required when using -i")
+
+    if args.i:
+        completed, successes, total = process_from_input(args.i, args.pub_type)
+    else:
+        completed, successes, total = process_from_dois(args.d)
 
     with open(args.output, "w", encoding="utf-8") as f:
         f.writelines(completed)
